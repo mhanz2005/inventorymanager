@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automated Inventory Manager</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+    <style>
+        :root { --primary: #0284c7; --bg: #f8fafc; --card: #ffffff; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #334155; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .card { background: var(--card); border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1, h2 { color: #0f172a; margin-top: 0; }
+        
+        label { display: block; margin: 10px 0 5px; font-weight: 600; font-size: 14px; }
+        input, select { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 15px; }
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
+        button { flex: 1; padding: 12px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; color: white; background: var(--primary); font-size: 15px; }
+        button.btn-issue { background: #e11d48; }
+        button.btn-delivery { background: #16a34a; }
+        button.btn-print { background: #059669; }
+        button.btn-reset { background: #d97706; }
+        button.btn-danger { background: #dc2626; }
+        button.btn-undo { background: #64748b; }
+        button:disabled { background: #cbd5e1; cursor: not-allowed; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f1f5f9; font-size: 13px; text-transform: uppercase; }
+
+        #qrDisplay { text-align: center; margin-top: 15px; }
+        #qrCanvas { margin: 10px auto; }
+        
+        @media print {
+            body * { visibility: hidden; }
+            #printableArea, #printableArea * { visibility: visible; }
+            #printableArea { position: absolute; left: 0; top: 0; width: 100%; }
+            .print-page-break { page-break-before: always; }
+            .no-print { display: none !important; }
+            body.print-only-inventory #printableTxLog { display: none !important; }
+            body.print-only-txlog #printableInventory { display: none !important; }
+            body.print-only-txlog #printableTxLog { page-break-before: avoid !important; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h1>📦 Automatic Inventory Manager</h1>
+    </div>
+
+    <!-- QR Scanner Banner -->
+    <div class="card" id="scanBanner" style="display:none; background: #f0f9ff; border: 1px solid #bae6fd;">
+        <h2 style="color: #0369a1;">Scanned Item Detected</h2>
+        <p>Item: <strong id="scannedName"></strong> | Ending Stock: <strong id="scannedStock"></strong></p>
+        
+        <label for="issuerName">Issuer Name:</label>
+        <input type="text" id="issuerName" placeholder="Enter your name or staff ID">
+
+        <label for="scannedQty">Quantity to Issue:</label>
+        <input type="number" id="scannedQty" value="1" min="1">
+        
+        <div class="btn-group">
+            <button class="btn-issue" onclick="processDeduction()">Deduct & Log Transaction</button>
+        </div>
+    </div>
+
+    <!-- Add Item Form -->
+    <div class="card no-print">
+        <h2>Add / Update Inventory Item</h2>
+        <p style="font-size: 13px; color: #64748b; margin-top: -8px;">Tip: Enter an existing Item ID to update its name or Beginning Balance.</p>
+        
+        <label for="itemId">Item ID / SKU:</label>
+        <input type="text" id="itemId" placeholder="e.g. PEN-001">
+        
+        <label for="itemName">Item Name:</label>
+        <input type="text" id="itemName" placeholder="e.g. Ballpen">
+        
+        <label for="itemStock">Beginning Balance:</label>
+        <input type="number" id="itemStock" value="10" min="0">
+
+        <div class="btn-group">
+            <button onclick="saveItem()">Save / Update Item</button>
+        </div>
+    </div>
+
+    <!-- Printable Area Container -->
+    <div id="printableArea">
+        
+        <!-- SECTION 1: Active Inventory Records -->
+        <div class="card" id="printableInventory">
+            <h2>Current Inventory Records</h2>
+            <table id="inventoryTable">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Item Name</th>
+                        <th>Beg. Balance</th>
+                        <th>Delivery Receipt</th>
+                        <th>Issued</th>
+                        <th>Ending Balance</th>
+                        <th class="no-print">Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            
+            <div class="btn-group no-print">
+                <button class="btn-print" onclick="printSection('inventory')">🖨️ Print Inventory Only</button>
+                <button class="btn-reset" onclick="startNewMonth()">🔄 New Month (Carry Over Stock)</button>
+            </div>
+        </div>
+
+        <!-- SECTION 2: Transaction History Log -->
+        <div class="card print-page-break" id="printableTxLog">
+            <h2>📋 Transaction Log</h2>
+            <table id="transactionTable">
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Type</th>
+                        <th>Item ID</th>
+                        <th>Item Name</th>
+                        <th>Qty</th>
+                        <th>Processed By</th>
+                        <th class="no-print">Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            
+            <div class="btn-group no-print">
+                <button class="btn-print" onclick="printSection('txlog')">🖨️ Print Transaction Log Only</button>
+                <button class="btn-print" style="background: #0284c7;" onclick="printSection('both')">🖨️ Print Both (2 Pages)</button>
+                <button class="btn-undo" onclick="undoLastTransaction()">↩ Undo Last Transaction</button>
+                <button class="btn-danger" onclick="clearTransactions()">🗑️ Clear Transaction Log</button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Printable QR Modal -->
+    <div class="card no-print" id="qrCard" style="display:none;">
+        <h2>Print Item QR Label</h2>
+        <div id="qrDisplay">
+            <p><strong id="qrItemTitle"></strong></p>
+            <canvas id="qrCanvas"></canvas>
+            <p><small id="qrSubText"></small></p>
+            <div class="btn-group">
+                <button class="btn-print" onclick="printQR()">Print Label</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let inventory = [];
+    let transactions = [];
+
+    async function loadData() {
+        try {
+            const res = await fetch('api.php?action=get_all');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const data = await res.json();
+            if (Array.isArray(data.inventory)) inventory = data.inventory;
+            if (Array.isArray(data.transactions)) transactions = data.transactions;
+
+            renderTable();
+            renderTransactions();
+        } catch (error) {
+            console.error('Failed to load data from database:', error);
+        }
+    }
+
+    async function saveItem() {
+        const id = document.getElementById('itemId').value.trim();
+        const name = document.getElementById('itemName').value.trim();
+        const beginning = parseInt(document.getElementById('itemStock').value);
+
+        if (!id || !name || isNaN(beginning)) {
+            alert('Please fill out all fields.');
+            return;
+        }
+
+        try {
+            const response = await fetch('api.php?action=save_item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, name, beginning })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                document.getElementById('itemId').value = '';
+                document.getElementById('itemName').value = '';
+                document.getElementById('itemStock').value = '10';
+
+                await loadData();
+                alert('Item saved successfully!');
+            } else {
+                alert('Failed to save item: ' + (result.message || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error saving item:', error);
+            alert('Network error while saving item.');
+        }
+    }
+
+    // Add Delivery Stocks
+    async function addDelivery(id) {
+        const item = inventory.find(i => i.id === id);
+        if (!item) return;
+
+        const qtyInput = prompt(`How many units of new delivery stock arrived for "${item.name}"?`, '10');
+        if (qtyInput === null) return;
+
+        const qtyToAdd = parseInt(qtyInput);
+        if (isNaN(qtyToAdd) || qtyToAdd <= 0) {
+            alert('Please enter a valid quantity greater than 0.');
+            return;
+        }
+
+        const receiver = prompt(`Enter receiver's name / DR Reference No. for "${item.name}":`);
+        if (receiver === null) return;
+        if (!receiver.trim()) {
+            alert('Delivery entry cancelled. Receiver name or DR reference is required.');
+            return;
+        }
+
+        try {
+            const response = await fetch('api.php?action=add_delivery', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ itemId: id, qty: qtyToAdd, receivedBy: receiver.trim() })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                await loadData();
+                alert(`Successfully added ${qtyToAdd} unit(s) of stock to ${item.name}!`);
+            } else {
+                alert('Delivery entry failed: ' + result.message);
+            }
+        } catch (error) {
+            console.error('Error adding delivery stock:', error);
+        }
+    }
+
+    async function manualIssue(id) {
+        const item = inventory.find(i => i.id === id);
+        if (!item) return;
+
+        if (parseInt(item.ending) <= 0) {
+            alert('Insufficient stock available!');
+            return;
+        }
+
+        const qtyInput = prompt(`How many units of "${item.name}" would you like to issue? (Available: ${item.ending})`, '1');
+        if (qtyInput === null) return;
+
+        const qtyToIssue = parseInt(qtyInput);
+        if (isNaN(qtyToIssue) || qtyToIssue <= 0) {
+            alert('Please enter a valid quantity greater than 0.');
+            return;
+        }
+
+        if (qtyToIssue > parseInt(item.ending)) {
+            alert(`Cannot issue ${qtyToIssue} unit(s). Only ${item.ending} unit(s) remaining.`);
+            return;
+        }
+
+        const issuer = prompt(`Enter the name of the person issuing ${qtyToIssue} unit(s) of "${item.name}":`);
+        if (issuer === null) return;
+        if (!issuer.trim()) {
+            alert('Issuance cancelled. Issuer name is required.');
+            return;
+        }
+
+        try {
+            const response = await fetch('api.php?action=issue_stock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ itemId: id, qty: qtyToIssue, issuer: issuer.trim() })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                await loadData();
+                alert(`Successfully issued ${qtyToIssue} unit(s) of ${item.name}!`);
+            } else {
+                alert('Issuance failed: ' + result.message);
+            }
+        } catch (error) {
+            console.error('Error issuing stock:', error);
+        }
+    }
+
+    async function processDeduction() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const scannedId = urlParams.get('item_id');
+        const qtyToDeduct = parseInt(document.getElementById('scannedQty').value);
+        const issuerName = document.getElementById('issuerName').value.trim();
+
+        if (isNaN(qtyToDeduct) || qtyToDeduct <= 0) {
+            alert('Please enter a valid issuance quantity.');
+            return;
+        }
+
+        if (!issuerName) {
+            alert('Please enter the Issuer Name.');
+            return;
+        }
+
+        try {
+            const response = await fetch('api.php?action=issue_stock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ itemId: scannedId, qty: qtyToDeduct, issuer: issuerName })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                await loadData();
+                alert(`Successfully issued ${qtyToDeduct} unit(s).`);
+                window.history.replaceState({}, document.title, window.location.pathname);
+                document.getElementById('scanBanner').style.display = 'none';
+                document.getElementById('issuerName').value = '';
+            } else {
+                alert('Error: ' + result.message);
+            }
+        } catch (error) {
+            console.error('Error during deduction:', error);
+        }
+    }
+
+    async function undoLastTransaction() {
+        if (transactions.length === 0) {
+            alert('No transactions to undo.');
+            return;
+        }
+        const lastTx = transactions[0];
+        await undoTransaction(lastTx.id);
+    }
+
+    async function undoTransaction(txId) {
+        if (!confirm('Are you sure you want to undo this transaction and update the inventory stock?')) {
+            return;
+        }
+
+        try {
+            const response = await fetch('api.php?action=undo_transaction', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ transactionId: txId })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                await loadData();
+                alert('Transaction undone successfully!');
+            } else {
+                alert('Failed to undo transaction: ' + (result.message || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error undoing transaction:', error);
+            alert('Network error while processing undo.');
+        }
+    }
+
+    async function deleteItem(id) {
+        const item = inventory.find(i => i.id === id);
+        if (!item) return;
+
+        if (confirm(`Are you sure you want to delete "${item.name}" (${item.id})?`)) {
+            try {
+                const res = await fetch(`api.php?action=delete_item&id=${encodeURIComponent(id)}`);
+                const result = await res.json();
+
+                if (result.success) {
+                    await loadData();
+                } else {
+                    alert('Failed to delete item: ' + result.message);
+                }
+            } catch (error) {
+                console.error('Error deleting item:', error);
+            }
+        }
+    }
+
+    async function clearTransactions() {
+        if (transactions.length === 0) {
+            alert('The transaction log is already empty.');
+            return;
+        }
+
+        if (confirm("Are you sure you want to clear all transaction logs?")) {
+            try {
+                const res = await fetch('api.php?action=clear_transactions');
+                const result = await res.json();
+                if (result.success) {
+                    await loadData();
+                    alert('Transaction log cleared successfully!');
+                } else {
+                    alert('Failed to clear log: ' + result.message);
+                }
+            } catch (error) {
+                console.error('Error clearing transactions:', error);
+            }
+        }
+    }
+
+    async function startNewMonth() {
+        if (inventory.length === 0) {
+            alert('No inventory items to reset.');
+            return;
+        }
+
+        if (confirm("Start a new monthly report?\n\nThis will carry forward current ending stock as the new beginning balance and reset delivery/issued records.")) {
+            try {
+                const res = await fetch('api.php?action=start_new_month');
+                const result = await res.json();
+                if (result.success) {
+                    await loadData();
+                    alert('Monthly report balances updated successfully!');
+                } else {
+                    alert('Failed to reset month: ' + result.message);
+                }
+            } catch (error) {
+                console.error('Error starting new month:', error);
+            }
+        }
+    }
+
+    function renderTable() {
+        const tbody = document.querySelector('#inventoryTable tbody');
+        tbody.innerHTML = '';
+        
+        inventory.forEach(item => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong>${item.id}</strong></td>
+                <td>${item.name}</td>
+                <td>${item.beginning}</td>
+                <td><span style="color:#16a34a; font-weight:bold;">+${item.delivery || 0}</span></td>
+                <td><span style="color:#e11d48; font-weight:bold;">${item.issued || 0}</span></td>
+                <td><strong>${item.ending}</strong></td>
+                <td class="no-print" style="display: flex; gap: 5px;">
+                    <button style="padding: 6px 10px; font-size: 12px; background:#16a34a;" onclick="addDelivery('${item.id}')">+ Delivery</button>
+                    <button style="padding: 6px 10px; font-size: 12px; background:#0284c7;" onclick="manualIssue('${item.id}')">Issue Stock</button>
+                    <button style="padding: 6px 10px; font-size: 12px;" onclick="generateQR('${item.id}')">QR</button>
+                    <button style="padding: 6px 10px; font-size: 12px; background:#dc2626;" onclick="deleteItem('${item.id}')">Delete</button>
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    function renderTransactions() {
+        const tbody = document.querySelector('#transactionTable tbody');
+        tbody.innerHTML = '';
+
+        if (transactions.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#94a3b8;">No transaction history yet.</td></tr>';
+            return;
+        }
+
+        transactions.forEach(tx => {
+            const isDelivery = tx.type === 'delivery';
+            const badgeClass = isDelivery ? 'color:#16a34a; font-weight:bold;' : 'color:#e11d48; font-weight:bold;';
+            const qtySign = isDelivery ? `+${tx.qty}` : `-${tx.qty}`;
+            const typeLabel = isDelivery ? '🚚 Delivery' : '📦 Issue';
+
+            const row = document.createElement('tr');
+            const timestamp = new Date(tx.timestamp).toLocaleString('en-US', { timeZone: 'Asia/Manila' });
+            
+            row.innerHTML = `
+                <td><small>${timestamp}</small></td>
+                <td><small style="${badgeClass}">${typeLabel}</small></td>
+                <td><strong>${tx.itemId}</strong></td>
+                <td>${tx.itemName}</td>
+                <td><span style="${badgeClass}">${qtySign}</span></td>
+                <td>${tx.issuer}</td>
+                <td class="no-print">
+                    <button class="btn-undo" style="padding: 6px 10px; font-size: 12px;" onclick="undoTransaction('${tx.id}')">Undo</button>
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    function generateQR(id) {
+        const item = inventory.find(i => i.id === id);
+        if (!item) return;
+
+        const targetUrl = window.location.origin + window.location.pathname + '?item_id=' + encodeURIComponent(id);
+
+        QRCode.toCanvas(document.getElementById('qrCanvas'), targetUrl, { width: 180 }, function (error) {
+            if (error) console.error(error);
+            document.getElementById('qrItemTitle').innerText = item.name + ' (' + item.id + ')';
+            document.getElementById('qrSubText').innerText = 'Scan to issue item';
+            document.getElementById('qrCard').style.display = 'block';
+            document.getElementById('qrCard').scrollIntoView({ behavior: 'smooth' });
+        });
+    }
+
+    function printQR() {
+        const qrCard = document.getElementById('qrCard');
+        qrCard.classList.remove('no-print');
+        window.print();
+        qrCard.classList.add('no-print');
+    }
+
+    function printSection(mode) {
+        document.body.classList.remove('print-only-inventory', 'print-only-txlog');
+        if (mode === 'inventory') document.body.classList.add('print-only-inventory');
+        else if (mode === 'txlog') document.body.classList.add('print-only-txlog');
+        
+        window.print();
+        document.body.classList.remove('print-only-inventory', 'print-only-txlog');
+    }
+
+    function checkURLParams() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const scannedId = urlParams.get('item_id');
+
+        if (scannedId) {
+            const item = inventory.find(i => i.id === scannedId);
+            if (item) {
+                document.getElementById('scannedName').innerText = item.name + ' (' + item.id + ')';
+                document.getElementById('scannedStock').innerText = item.ending;
+                document.getElementById('scanBanner').style.display = 'block';
+            }
+        }
+    }
+
+    loadData().then(() => checkURLParams());
+    setInterval(loadData, 3000);
+</script>
+</body>
+</html>
